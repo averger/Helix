@@ -18,12 +18,35 @@ use crate::scan::{self, ScanManager};
 
 const TELEMETRY_HZ: f64 = 30.0;
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct Tool {
+    pub number: u16,
+    #[serde(default)]
+    pub diameter: f64,
+    #[serde(default)]
+    pub length: f64,
+    #[serde(default)]
+    pub note: String,
+}
+
 #[derive(Clone)]
 pub struct App {
     pub machine: Arc<dyn Machine>,
     pub programs_dir: PathBuf,
     pub loaded: Arc<Mutex<Option<gcode::Program>>>,
     pub scans: Arc<ScanManager>,
+    pub tools: Arc<Mutex<Vec<Tool>>>,
+    pub tools_path: PathBuf,
+    pub block_delete: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl App {
+    pub fn load_tools(path: &std::path::Path) -> Vec<Tool> {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
 }
 
 pub fn router(app: App) -> Router {
@@ -32,6 +55,7 @@ pub fn router(app: App) -> Router {
         .route("/api/programs/:name", get(get_program))
         .route("/api/programs/:name/load", post(load_program))
         .route("/api/toolpath", get(toolpath))
+        .route("/api/tools", get(get_tools).put(put_tools))
         .route("/api/scans", get(list_scans).post(create_scan))
         .route("/api/scans/active", get(get_active_scan))
         .route("/api/scans/active/point", post(capture_point))
@@ -124,7 +148,14 @@ async fn load_program(
     let path = resolve(&app.programs_dir, &name)?;
     let source = std::fs::read_to_string(path)
         .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let program = gcode::parse(&name, &source)
+    // resolve work offsets, G92 and tool lengths exactly as the machine
+    // will see them right now
+    let mut ctx = app.machine.parse_context();
+    for tool in app.tools.lock().unwrap().iter() {
+        ctx.tool_lengths.insert(tool.number, tool.length);
+    }
+    ctx.block_delete = app.block_delete.load(std::sync::atomic::Ordering::Relaxed);
+    let program = gcode::parse_with(&name, &source, ctx)
         .map_err(|e| fail(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
     if program.segments.is_empty() {
         return Err(fail(StatusCode::UNPROCESSABLE_ENTITY, "program contains no motion"));
@@ -154,6 +185,26 @@ async fn toolpath(AxumState(app): AxumState<App>) -> Json<Value> {
             "segments": p.segments,
         })),
     }
+}
+
+// ── tool table ────────────────────────────────────────────────────────────
+
+async fn get_tools(AxumState(app): AxumState<App>) -> Json<Vec<Tool>> {
+    Json(app.tools.lock().unwrap().clone())
+}
+
+async fn put_tools(
+    AxumState(app): AxumState<App>,
+    Json(mut tools): Json<Vec<Tool>>,
+) -> Result<Json<Value>, ApiError> {
+    tools.retain(|t| t.number > 0);
+    tools.sort_by_key(|t| t.number);
+    tools.dedup_by_key(|t| t.number);
+    std::fs::write(&app.tools_path, serde_json::to_string_pretty(&tools).unwrap())
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let count = tools.len();
+    *app.tools.lock().unwrap() = tools;
+    Ok(Json(json!({"tools": count})))
 }
 
 // ── digitizing ────────────────────────────────────────────────────────────
@@ -410,6 +461,10 @@ async fn ws_session(app: App, mut socket: WebSocket) {
                 let mut snapshot = app.machine.telemetry();
                 if let Some(obj) = snapshot.as_object_mut() {
                     obj.insert("scan".into(), app.scans.status());
+                    obj.insert(
+                        "block_delete".into(),
+                        app.block_delete.load(std::sync::atomic::Ordering::Relaxed).into(),
+                    );
                 }
                 if socket.send(Message::Text(snapshot.to_string())).await.is_err() {
                     return;
@@ -450,11 +505,12 @@ async fn dispatch(app: &App, msg: &Value) -> crate::machine::Result {
             .and_then(|s| s.chars().next())
             .ok_or_else(|| reject("missing axis"))
     };
+    let bool_of = |key: &str| msg.get(key).and_then(Value::as_bool);
     match str_of("cmd") {
         Some("estop") => m.estop().await,
         Some("estop_reset") => m.estop_reset().await,
-        Some("power") => m.power(msg.get("on").and_then(Value::as_bool).unwrap_or(true)).await,
-        Some("home") => m.home().await,
+        Some("power") => m.power(bool_of("on").unwrap_or(true)).await,
+        Some("home") => m.home(str_of("axis").and_then(|s| s.chars().next())).await,
         Some("jog") => {
             let dir = num_of("dir").ok_or_else(|| reject("missing dir"))? as i8;
             m.jog(axis()?, dir, num_of("velocity").unwrap_or(3000.0)).await
@@ -465,10 +521,43 @@ async fn dispatch(app: &App, msg: &Value) -> crate::machine::Result {
             m.jog_step(axis()?, dir, step).await
         }
         Some("mdi") => m.mdi(str_of("text").ok_or_else(|| reject("missing text"))?).await,
-        Some("run") => m.run().await,
+        Some("run") => m.run(num_of("line").map(|l| l as usize)).await,
         Some("pause") => m.pause().await,
         Some("resume") => m.resume().await,
         Some("stop") => m.stop().await,
+        Some("single_block") => m.set_single_block(bool_of("on").unwrap_or(false)).await,
+        Some("optional_stop") => m.set_optional_stop(bool_of("on").unwrap_or(false)).await,
+        Some("block_delete") => {
+            // load-time switch: takes effect on the next program (re)load
+            app.block_delete
+                .store(bool_of("on").unwrap_or(false), std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+        Some("wcs") => {
+            let index = num_of("index").ok_or_else(|| reject("missing index"))? as usize;
+            m.set_wcs(index).await
+        }
+        Some("touch_off") => {
+            let value = num_of("value").unwrap_or(0.0);
+            m.touch_off(axis()?, value).await
+        }
+        Some("tool") => {
+            let number = num_of("number").ok_or_else(|| reject("missing number"))? as u16;
+            let length = app
+                .tools
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|t| t.number == number)
+                .map(|t| t.length)
+                .unwrap_or(0.0);
+            m.select_tool(number, length).await
+        }
+        Some("spindle") => {
+            let on = bool_of("on").unwrap_or(false);
+            m.set_spindle(on, num_of("rpm").unwrap_or(0.0), bool_of("reverse").unwrap_or(false)).await
+        }
+        Some("coolant") => m.set_coolant(bool_of("on").unwrap_or(false)).await,
         Some("override") => {
             let kind = str_of("kind").ok_or_else(|| reject("missing kind"))?;
             let value = num_of("value").ok_or_else(|| reject("missing value"))?;

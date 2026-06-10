@@ -26,6 +26,10 @@ Helix asks one question: *what would this look like if it were designed today?*
   readouts you can read from two meters away, no glare on the enclosure glass.
 - **Honest state.** The machine's state machine (ESTOP → OFF → ON → HOMED → RUNNING)
   is always visible and always truthful. No ambiguous buttons.
+- **Real shop workflow.** Work coordinate systems (G54–G59.3) with one-touch
+  touch-off, a tool table feeding G43 and manual tool changes, manual
+  spindle/coolant, single-block, run-from-line, M0/M1 stops, block delete,
+  canned drilling cycles — the things you actually need to make a part.
 - **Simulation built in.** The full interface runs against a physics-faithful G-code
   simulator — train operators, verify programs, demo the UI, all without a machine.
 - **Digitize what's on the table.** Zero the spindle on a part, trace it point by

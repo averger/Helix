@@ -66,7 +66,8 @@ pub trait Machine: Send + Sync {
     async fn estop(&self) -> Result;
     async fn estop_reset(&self) -> Result;
     async fn power(&self, on: bool) -> Result;
-    async fn home(&self) -> Result;
+    /// Home one axis, or all of them when `axis` is None.
+    async fn home(&self, axis: Option<char>) -> Result;
 
     // -- motion ----------------------------------------------------------------
     /// Continuous jog; direction 0 stops the axis. Velocity in mm/min.
@@ -76,10 +77,30 @@ pub trait Machine: Send + Sync {
 
     // -- program -------------------------------------------------------------------
     async fn load_program(&self, program: Program) -> Result;
-    async fn run(&self) -> Result;
+    /// Start the loaded program; `from_line` skips everything before that
+    /// 1-based source line.
+    async fn run(&self, from_line: Option<usize>) -> Result;
     async fn pause(&self) -> Result;
     async fn resume(&self) -> Result;
     async fn stop(&self) -> Result;
+    /// Pause after every block when on.
+    async fn set_single_block(&self, on: bool) -> Result;
+    /// Honour M1 optional stops when on.
+    async fn set_optional_stop(&self, on: bool) -> Result;
+
+    // -- offsets & tooling ---------------------------------------------------------
+    /// Select the active work coordinate system (0 = G54 … 8 = G59.3).
+    async fn set_wcs(&self, index: usize) -> Result;
+    /// Make the current position read `value` on `axis` in the active WCS
+    /// (the classic touch-off).
+    async fn touch_off(&self, axis: char, value: f64) -> Result;
+    /// Manual tool change: tool number and its length offset.
+    async fn select_tool(&self, number: u16, length: f64) -> Result;
+
+    // -- spindle & coolant -----------------------------------------------------------
+    /// Manual spindle control; `reverse` = M4 direction.
+    async fn set_spindle(&self, on: bool, rpm: f64, reverse: bool) -> Result;
+    async fn set_coolant(&self, on: bool) -> Result;
 
     // -- probing -------------------------------------------------------------------
     /// Move to (x, y) at z_safe, then probe down toward z_min at `feed`.
@@ -94,4 +115,10 @@ pub trait Machine: Send + Sync {
     // -- telemetry -------------------------------------------------------------------------
     /// Snapshot for the 30 Hz websocket stream. Must be cheap.
     fn telemetry(&self) -> Value;
+
+    /// Offsets snapshot used to resolve program coordinates at load time.
+    /// Backends that cannot report offsets fall back to identity.
+    fn parse_context(&self) -> crate::gcode::Context {
+        crate::gcode::Context::default()
+    }
 }

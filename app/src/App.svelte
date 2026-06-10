@@ -7,8 +7,13 @@
   import Transport from './lib/Transport.svelte'
   import Library from './lib/Library.svelte'
   import Digitize from './lib/Digitize.svelte'
+  import Tools from './lib/Tools.svelte'
+  import Code from './lib/Code.svelte'
+  import Spindle from './lib/Spindle.svelte'
   import Toast from './lib/Toast.svelte'
-  import { activePanel } from './lib/store.js'
+  import { activePanel, refreshTools } from './lib/store.js'
+
+  refreshTools()
 </script>
 
 <div class="shell">
@@ -20,12 +25,17 @@
         <Library />
       {:else if $activePanel === 'digitize'}
         <Digitize />
+      {:else if $activePanel === 'tools'}
+        <Tools />
+      {:else if $activePanel === 'code'}
+        <Code />
       {/if}
       <Toast />
     </section>
     <aside>
       <DRO />
       <Jog />
+      <Spindle />
       <Overrides />
     </aside>
   </main>

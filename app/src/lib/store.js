@@ -12,6 +12,7 @@ export const activePanel = writable(null)
 export const scans = writable([])
 /// points currently shown in the viewport: { name, points: [[x,y,z],…], mode }
 export const scanCloud = writable(null)
+export const tools = writable([])
 
 let socket = null
 let retryTimer = null
@@ -74,6 +75,27 @@ export async function uploadProgram(file) {
     return
   }
   await refreshPrograms()
+}
+
+// ── tool table ──────────────────────────────────────────────────────────
+
+export async function refreshTools() {
+  const res = await fetch('/api/tools')
+  if (res.ok) tools.set(await res.json())
+}
+
+export async function saveTools(table) {
+  const res = await fetch('/api/tools', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(table),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    showRejection('tools', body.detail || res.statusText)
+    return
+  }
+  await refreshTools()
 }
 
 // ── digitizing ──────────────────────────────────────────────────────────

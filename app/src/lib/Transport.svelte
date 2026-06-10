@@ -5,15 +5,36 @@
   let prog = $derived($telemetry?.program)
   let progress = $derived(prog?.progress ?? 0)
   let canRun = $derived(state === 'idle' && !!$loadedInfo)
+  let singleBlock = $derived($telemetry?.single_block ?? false)
+  let optionalStop = $derived($telemetry?.optional_stop ?? false)
+
+  const togglePanel = (name) => activePanel.update((v) => (v === name ? null : name))
 </script>
 
 <footer class="panel">
-  <button class="btn" onclick={() => activePanel.update((v) => (v === 'library' ? null : 'library'))}>
-    ☰ Programs
-  </button>
-  <button class="btn" onclick={() => activePanel.update((v) => (v === 'digitize' ? null : 'digitize'))}>
-    ⊹ Digitize
-  </button>
+  <button class="btn" onclick={() => togglePanel('library')}>☰ Programs</button>
+  <button class="btn" onclick={() => togglePanel('code')}>⌘ Code</button>
+  <button class="btn" onclick={() => togglePanel('tools')}>⛭ Tools</button>
+  <button class="btn" onclick={() => togglePanel('digitize')}>⊹ Digitize</button>
+
+  <div class="modes">
+    <button
+      class="chip"
+      class:active={singleBlock}
+      title="Single block — pause after every block"
+      onclick={() => send({ cmd: 'single_block', on: !singleBlock })}
+    >
+      SBL
+    </button>
+    <button
+      class="chip"
+      class:active={optionalStop}
+      title="Optional stop — honour M1"
+      onclick={() => send({ cmd: 'optional_stop', on: !optionalStop })}
+    >
+      M1
+    </button>
+  </div>
 
   <div class="prog">
     {#if $loadedInfo}
@@ -52,8 +73,31 @@
   footer {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 10px;
     padding: 12px 14px;
+  }
+
+  .modes {
+    display: flex;
+    gap: 4px;
+  }
+
+  .chip {
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+    border: 1px solid var(--hairline);
+    transition: all 150ms var(--ease);
+  }
+
+  .chip.active {
+    color: var(--warn);
+    border-color: rgba(251, 191, 36, 0.45);
+    background: rgba(251, 191, 36, 0.12);
   }
 
   .prog {

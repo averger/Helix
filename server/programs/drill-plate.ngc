@@ -1,0 +1,27 @@
+(Helix demo - drilled plate: tools, canned cycles, optional stop)
+G21 G90 G17
+T1 M6 G43 H1
+G0 Z10
+M3 S6000 M8
+
+(4 corner holes, simple drill cycle)
+G99 G81 X-40 Y-25 R2 Z-6 F350
+X40
+Y25
+X-40
+G80
+G0 Z10
+
+(operator check before the deep center bore)
+M5 M9
+M1
+
+(center hole, peck drilling)
+T2 M6 G43 H2
+M3 S4500 M8
+G99 G83 X0 Y0 R2 Z-18 Q5 F250
+G80
+G0 Z15
+M5 M9
+G0 X0 Y0
+M2

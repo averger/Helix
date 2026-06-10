@@ -58,13 +58,26 @@ Telemetry always carries the authoritative state.
 
 ```json
 {"cmd": "estop"} | {"cmd": "estop_reset"} | {"cmd": "power", "on": true}
-{"cmd": "home"}                       // all axes
+{"cmd": "home"} | {"cmd": "home", "axis": "z"}
 {"cmd": "jog", "axis": "x", "dir": 1, "velocity": 3000}   // continuous; dir 0 stops
 {"cmd": "jog_step", "axis": "z", "dir": -1, "step": 0.1}
-{"cmd": "run"} | {"cmd": "pause"} | {"cmd": "resume"} | {"cmd": "stop"}
-{"cmd": "mdi", "text": "G0 X0 Y0"}
+{"cmd": "run"} | {"cmd": "run", "line": 117}              // run-from-line
+{"cmd": "pause"} | {"cmd": "resume"} | {"cmd": "stop"}
+{"cmd": "single_block", "on": true}   // pause after every block
+{"cmd": "optional_stop", "on": true}  // honour M1
+{"cmd": "block_delete", "on": true}   // skip /-lines at next (re)load
+{"cmd": "mdi", "text": "G0 X0 Y0"}    // executed in work coordinates
+{"cmd": "wcs", "index": 1}            // 0 = G54 … 8 = G59.3
+{"cmd": "touch_off", "axis": "x", "value": 0}   // here becomes X0 in the active WCS
+{"cmd": "tool", "number": 2}          // manual M6, length from the tool table
+{"cmd": "spindle", "on": true, "rpm": 12000, "reverse": false}   // M3/M4/M5
+{"cmd": "coolant", "on": true}        // M8/M9
 {"cmd": "override", "kind": "feed" | "rapid" | "spindle", "value": 1.25}
 ```
+
+Telemetry carries both `position` (work coordinates — what the operator
+machines in) and `machine_position` (G53), plus the active `wcs`, current
+`tool`, `coolant`, `single_block`/`optional_stop` latches and per-axis homing.
 
 ### REST
 
@@ -77,25 +90,36 @@ Telemetry always carries the authoritative state.
 | `GET  /api/toolpath`    | planned toolpath of the loaded program — typed
                             polyline segments (`rapid` / `feed` / `arc`) for the
                             WebGL viewer                                   |
+| `GET/PUT /api/tools`    | tool table (number, diameter, length, note) — lengths
+                            feed G43 in programs and manual tool changes  |
 
 ## G-code pipeline
 
 `server/src/gcode.rs` implements a single-pass interpreter for the moves the
-viewer and simulator need: `G0 G1 G2 G3 G17/18/19 G20/21 G90/91 G90.1/91.1 M2/30 F S`
-with modal state, IJK/R arcs, helical interpolation and inch/metric handling.
-Arcs are tessellated server-side (chord-error-bounded, 0.05 mm) so the client
-renders only polylines. The same segment list drives the simulator's motion
-integration (per-segment velocity at the programmed feed, rapids at machine
-limits) — the progress you see in sim is the progress you'd get on iron, minus
-acceleration physics.
+viewer and simulator need: `G0–G3` (IJK/R arcs, helical), plane select, units,
+abs/rel, **work coordinate systems** (`G54–G59.3`, `G10 L2/L20`, `G92/G92.1`),
+**tool length compensation** (`G43 H`/`G49`, `T`/`M6`), **canned cycles**
+(`G81/G82/G83` with `G98/G99` retract), program pauses (`M0/M1`), spindle and
+coolant words (`M3/4/5 S`, `M7/8/9`), and block delete (`/`-lines).
+
+Coordinates are resolved to machine space at parse time against a [`Context`]
+snapshot taken from the live machine (offsets, G92, tool lengths) — exactly
+what a controller's interpreter does, so the viewer shows the program where
+the machine will actually cut it. Arcs are tessellated server-side
+(chord-error-bounded, 0.05 mm) so the client renders only polylines. The same
+segment list drives the simulator's motion integration (per-segment velocity
+at the programmed feed, rapids at machine limits; spindle, coolant and tool
+state per segment) — the progress you see in sim is the progress you'd get on
+iron, minus acceleration physics.
 
 On a real machine the pipeline hands the file to LinuxCNC's interpreter instead
 and the segment list is used for visualization only.
 
 ## The machine abstraction
 
-`server/src/machine/mod.rs` defines the `Machine` trait — ~15 async methods
-(`estop`, `power`, `home`, `jog`, `run`, `telemetry()` …). Implementations:
+`server/src/machine/mod.rs` defines the `Machine` trait — ~20 async methods
+(`estop`, `power`, `home`, `jog`, `run`, `touch_off`, `set_wcs`,
+`select_tool`, `set_spindle`, `probe_z`, `telemetry()` …). Implementations:
 
 - `machine/sim.rs` — integrates motion at 120 Hz on a tokio task, publishes at
   30 Hz. Homing sequences, jog clamping to soft limits, feed/rapid/spindle

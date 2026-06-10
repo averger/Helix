@@ -60,6 +60,7 @@ pub struct LinuxCncMachine {
     link: tokio::sync::Mutex<Link>,
     loaded: Mutex<Option<ProgramInfo>>,
     cached: Arc<Mutex<Value>>,
+    single_block: std::sync::atomic::AtomicBool,
 }
 
 struct ProgramInfo {
@@ -86,6 +87,7 @@ impl LinuxCncMachine {
             link: tokio::sync::Mutex::new(link),
             loaded: Mutex::new(None),
             cached: Arc::new(Mutex::new(json!({"state": "off", "alarms": ["connecting"]}))),
+            single_block: std::sync::atomic::AtomicBool::new(false),
         });
 
         // telemetry poller — keeps `telemetry()` sync and cheap
@@ -196,10 +198,14 @@ impl Machine for LinuxCncMachine {
         self.link.lock().await.set(if on { "machine on" } else { "machine off" }).await
     }
 
-    async fn home(&self) -> Result {
+    async fn home(&self, axis: Option<char>) -> Result {
         let mut link = self.link.lock().await;
         link.set("mode manual").await?;
-        link.set("home -1").await
+        let joint = match axis {
+            None => -1i64,
+            Some(a) => Self::joint(a)? as i64,
+        };
+        link.set(&format!("home {joint}")).await
     }
 
     async fn jog(&self, axis: char, direction: i8, velocity: f64) -> Result {
@@ -244,10 +250,16 @@ impl Machine for LinuxCncMachine {
         Ok(())
     }
 
-    async fn run(&self) -> Result {
+    async fn run(&self, from_line: Option<usize>) -> Result {
         let mut link = self.link.lock().await;
         link.set("mode auto").await?;
-        link.set("run").await
+        if self.single_block.load(std::sync::atomic::Ordering::Relaxed) {
+            return link.set("step").await;
+        }
+        match from_line {
+            None => link.set("run").await,
+            Some(line) => link.set(&format!("run {line}")).await,
+        }
     }
 
     async fn pause(&self) -> Result {
@@ -255,11 +267,73 @@ impl Machine for LinuxCncMachine {
     }
 
     async fn resume(&self) -> Result {
+        // in single-block, each resume advances exactly one block
+        if self.single_block.load(std::sync::atomic::Ordering::Relaxed) {
+            return self.link.lock().await.set("step").await;
+        }
         self.link.lock().await.set("resume").await
     }
 
     async fn stop(&self) -> Result {
         self.link.lock().await.set("abort").await
+    }
+
+    async fn set_single_block(&self, on: bool) -> Result {
+        // linuxcncrsh exposes stepping rather than a latch: remember the
+        // flag and drive run/resume with `step` while it is armed
+        self.single_block.store(on, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn set_optional_stop(&self, on: bool) -> Result {
+        self.link
+            .lock()
+            .await
+            .set(&format!("optional_stop {}", if on { "on" } else { "off" }))
+            .await
+    }
+
+    async fn set_wcs(&self, index: usize) -> Result {
+        if index >= 9 {
+            return Err(reject("WCS index out of range (0–8)"));
+        }
+        let code = crate::gcode::WCS_NAMES[index];
+        let mut link = self.link.lock().await;
+        link.set("mode mdi").await?;
+        link.set(&format!("mdi {code}")).await
+    }
+
+    async fn touch_off(&self, axis: char, value: f64) -> Result {
+        // G10 L20 rewrites the active WCS so the current position reads `value`
+        let mut link = self.link.lock().await;
+        link.set("mode mdi").await?;
+        link.set(&format!("mdi G10 L20 P0 {}{value:.4}", axis.to_ascii_uppercase())).await
+    }
+
+    async fn select_tool(&self, number: u16, _length: f64) -> Result {
+        // the controller's own tool table supplies the length via G43
+        let mut link = self.link.lock().await;
+        link.set("mode mdi").await?;
+        link.set(&format!("mdi T{number} M6 G43")).await
+    }
+
+    async fn set_spindle(&self, on: bool, rpm: f64, reverse: bool) -> Result {
+        let mut link = self.link.lock().await;
+        link.set("mode mdi").await?;
+        if on {
+            let m = if reverse { "M4" } else { "M3" };
+            link.set(&format!("mdi {m} S{:.0}", rpm.max(1.0))).await
+        } else {
+            link.set("mdi M5").await
+        }
+    }
+
+    async fn set_coolant(&self, on: bool) -> Result {
+        self.link
+            .lock()
+            .await
+            .set(&format!("flood {}", if on { "on" } else { "off" }))
+            .await
     }
 
     async fn probe_z(&self, x: f64, y: f64, z_safe: f64, z_min: f64, feed: f64) -> Result<Option<f64>> {

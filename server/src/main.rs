@@ -61,12 +61,17 @@ async fn main() -> anyhow_lite::Result {
     std::fs::create_dir_all(&programs_dir).map_err(|e| e.to_string())?;
     let scans_dir = args.scans.unwrap_or_else(default_scans_dir);
     let scans = Arc::new(scan::ScanManager::new(scans_dir).map_err(|e| e.to_string())?);
+    let tools_path = default_data_dir().join("tools.json");
+    let tools = api::App::load_tools(&tools_path);
 
     let app = api::App {
         machine,
         programs_dir: programs_dir.clone(),
         loaded: Arc::new(Mutex::new(None)),
         scans,
+        tools: Arc::new(Mutex::new(tools)),
+        tools_path,
+        block_delete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let addr = format!("{}:{}", args.host, args.port);
     tracing::info!("Helix server · listening on {addr} · programs={}", programs_dir.display());
@@ -86,11 +91,15 @@ fn default_programs_dir() -> PathBuf {
 }
 
 fn default_scans_dir() -> PathBuf {
+    default_data_dir().join("scans")
+}
+
+fn default_data_dir() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     if manifest.is_dir() {
-        return manifest.join("scans");
+        return manifest;
     }
-    dirs_home().join(".helix").join("scans")
+    dirs_home().join(".helix")
 }
 
 fn dirs_home() -> PathBuf {
