@@ -1,4 +1,6 @@
 mod api;
+mod comp;
+mod expr;
 mod gcode;
 mod machine;
 mod scan;

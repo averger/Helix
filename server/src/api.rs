@@ -153,6 +153,7 @@ async fn load_program(
     let mut ctx = app.machine.parse_context();
     for tool in app.tools.lock().unwrap().iter() {
         ctx.tool_lengths.insert(tool.number, tool.length);
+        ctx.tool_diameters.insert(tool.number, tool.diameter);
     }
     ctx.block_delete = app.block_delete.load(std::sync::atomic::Ordering::Relaxed);
     let program = gcode::parse_with(&name, &source, ctx)

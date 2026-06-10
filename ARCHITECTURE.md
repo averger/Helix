@@ -95,12 +95,23 @@ machines in) and `machine_position` (G53), plus the active `wcs`, current
 
 ## G-code pipeline
 
-`server/src/gcode.rs` implements a single-pass interpreter for the moves the
-viewer and simulator need: `G0–G3` (IJK/R arcs, helical), plane select, units,
-abs/rel, **work coordinate systems** (`G54–G59.3`, `G10 L2/L20`, `G92/G92.1`),
-**tool length compensation** (`G43 H`/`G49`, `T`/`M6`), **canned cycles**
-(`G81/G82/G83` with `G98/G99` retract), program pauses (`M0/M1`), spindle and
-coolant words (`M3/4/5 S`, `M7/8/9`), and block delete (`/`-lines).
+`server/src/gcode.rs` implements an RS274NGC interpreter for the moves the
+viewer and simulator need: `G0–G3` (IJK/R arcs, helical), `G4` dwell, plane
+select, units, abs/rel, **work coordinate systems** (`G54–G59.3`,
+`G10 L2/L20`, `G92/G92.1`), **tool length compensation** (`G43 H`/`G49`,
+`T`/`M6`), **cutter radius compensation** (`G40/G41/G42 D`, preview grade —
+`comp.rs` offsets the path, miters inside corners and inserts join arcs on
+outside corners; no gouge detection), **canned cycles** (`G81/G82/G83` with
+`G98/G99` retract), program pauses (`M0/M1`), spindle and coolant words
+(`M3/4/5 S`, `M7/8/9`), and block delete (`/`-lines).
+
+It is a real executor, not a line scanner: `#` **parameters** (numbered and
+named, subroutine-local vs. `_`-global scoping) with full `[...]`
+**expressions** (`expr.rs`: arithmetic, comparisons, logic, trig in degrees,
+`EXISTS`), and **O-codes** — `sub`/`endsub`/`call` with arguments,
+`return`, `if`/`elseif`/`else`/`endif`, `while`/`endwhile`,
+`repeat`/`endrepeat`. A 2-million-line execution budget catches endless
+loops at load time instead of on the machine.
 
 Coordinates are resolved to machine space at parse time against a [`Context`]
 snapshot taken from the live machine (offsets, G92, tool lengths) — exactly

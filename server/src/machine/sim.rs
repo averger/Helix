@@ -16,6 +16,8 @@ use serde_json::{json, Value};
 use super::{reject, Machine, Result, State};
 use crate::gcode::{Context, PauseKind, Program, Segment, SegmentKind, WCS_NAMES};
 
+type Dwell = (usize, f64);
+
 const TICK_HZ: f64 = 120.0;
 const SOFT_MIN: [f64; 3] = [-200.0, -200.0, -120.0];
 const SOFT_MAX: [f64; 3] = [200.0, 200.0, 0.0];
@@ -92,6 +94,8 @@ struct Sim {
     program: Option<Program>,
     run_segments: Vec<Segment>,
     staged_pauses: Vec<(usize, PauseKind)>,
+    staged_dwells: Vec<Dwell>,
+    dwell_remaining: f64,
     seg_index: usize,
     seg_entered: usize,
     point_index: usize,
@@ -130,6 +134,8 @@ impl Sim {
             program: None,
             run_segments: Vec::new(),
             staged_pauses: Vec::new(),
+            staged_dwells: Vec::new(),
+            dwell_remaining: 0.0,
             seg_index: 0,
             seg_entered: usize::MAX,
             point_index: 0,
@@ -165,12 +171,12 @@ impl Sim {
     fn halt_motion(&mut self) {
         self.jog_vel = [0.0; 3];
         self.jog_steps.clear();
-        self.stage(Vec::new(), Vec::new());
+        self.stage(Vec::new(), Vec::new(), Vec::new());
         self.feed_actual = 0.0;
     }
 
-    fn stage(&mut self, segments: Vec<Segment>, pauses: Vec<(usize, PauseKind)>) {
-        // drop zero-length segments while keeping pause indices aligned
+    fn stage(&mut self, segments: Vec<Segment>, pauses: Vec<(usize, PauseKind)>, dwells: Vec<Dwell>) {
+        // drop zero-length segments while keeping pause/dwell indices aligned
         let mut kept = Vec::with_capacity(segments.len());
         let mut remap = Vec::with_capacity(segments.len() + 1);
         for seg in segments {
@@ -180,10 +186,10 @@ impl Sim {
             }
         }
         remap.push(kept.len());
-        self.staged_pauses = pauses
-            .into_iter()
-            .map(|(i, k)| (remap.get(i).copied().unwrap_or(kept.len()), k))
-            .collect();
+        let map = |i: usize| remap.get(i).copied().unwrap_or(kept.len());
+        self.staged_pauses = pauses.into_iter().map(|(i, k)| (map(i), k)).collect();
+        self.staged_dwells = dwells.into_iter().map(|(i, s)| (map(i), s)).collect();
+        self.dwell_remaining = 0.0;
         self.run_segments = kept;
         self.seg_index = 0;
         self.seg_entered = usize::MAX;
@@ -277,6 +283,11 @@ impl Sim {
                 }
             }
         }
+        // G4 dwell before this block
+        if let Some(at) = self.staged_dwells.iter().position(|(i, _)| *i == self.seg_index) {
+            let (_, secs) = self.staged_dwells.remove(at);
+            self.dwell_remaining += secs;
+        }
         self.seg_entered = self.seg_index;
         let seg = &self.run_segments[self.seg_index];
         self.spindle_on = seg.rpm > 0.0;
@@ -296,6 +307,11 @@ impl Sim {
             return;
         }
         if self.enter_segment() {
+            return;
+        }
+        if self.dwell_remaining > 0.0 {
+            self.dwell_remaining -= dt;
+            self.feed_actual = 0.0;
             return;
         }
         let seg = &self.run_segments[self.seg_index];
@@ -365,7 +381,7 @@ impl Sim {
             self.spindle_on = false;
             self.coolant = false;
         }
-        self.stage(Vec::new(), Vec::new());
+        self.stage(Vec::new(), Vec::new(), Vec::new());
         self.state = State::Idle;
     }
 }
@@ -492,7 +508,7 @@ impl Machine for SimMachine {
                 })
                 .sum();
         }
-        s.stage(segments, prog.pauses);
+        s.stage(segments, prog.pauses, prog.dwells);
         s.state = State::Mdi;
         Ok(())
     }
@@ -503,7 +519,7 @@ impl Machine for SimMachine {
             return Err(reject("cannot load a program while one is running"));
         }
         s.program = Some(program);
-        s.stage(Vec::new(), Vec::new());
+        s.stage(Vec::new(), Vec::new(), Vec::new());
         Ok(())
     }
 
@@ -514,8 +530,8 @@ impl Machine for SimMachine {
             Some(p) if !p.segments.is_empty() => p.clone(),
             _ => return Err(reject("no program loaded")),
         };
-        let (segments, pauses) = match from_line {
-            None => (program.segments, program.pauses),
+        let (segments, pauses, dwells) = match from_line {
+            None => (program.segments, program.pauses, program.dwells),
             Some(line) => {
                 let skipped = program.segments.iter().take_while(|seg| seg.line < line).count();
                 if skipped == program.segments.len() {
@@ -528,10 +544,16 @@ impl Machine for SimMachine {
                     .filter(|(i, _)| *i >= skipped)
                     .map(|(i, k)| (i - skipped, k))
                     .collect();
-                (segments, pauses)
+                let dwells = program
+                    .dwells
+                    .into_iter()
+                    .filter(|(i, _)| *i >= skipped)
+                    .map(|(i, d)| (i - skipped, d))
+                    .collect();
+                (segments, pauses, dwells)
             }
         };
-        s.stage(segments, pauses);
+        s.stage(segments, pauses, dwells);
         s.state = State::Running;
         Ok(())
     }

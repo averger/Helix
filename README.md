@@ -30,6 +30,10 @@ Helix asks one question: *what would this look like if it were designed today?*
   touch-off, a tool table feeding G43 and manual tool changes, manual
   spindle/coolant, single-block, run-from-line, M0/M1 stops, block delete,
   canned drilling cycles — the things you actually need to make a part.
+- **Real G-code.** The built-in interpreter executes parametric programs:
+  `#` variables and `[...]` expressions, O-code subroutines with arguments,
+  `if`/`while`/`repeat`, G41/G42 cutter compensation, G4 dwell. What the
+  viewer shows is what your loops actually produce.
 - **Simulation built in.** The full interface runs against a physics-faithful G-code
   simulator — train operators, verify programs, demo the UI, all without a machine.
 - **Digitize what's on the table.** Zero the spindle on a part, trace it point by

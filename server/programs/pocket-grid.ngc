@@ -1,0 +1,44 @@
+(Helix demo - parametric pocket grid: subroutines, loops, expressions)
+(edit the parameters below and reload - the toolpath follows)
+(note: #<_name> params are global; plain #<name> are local to a sub)
+G21 G90 G17
+
+#<_cols>  = 3
+#<_rows>  = 2
+#<_pitch> = 35
+#<_size>  = 6      (pocket half-width)
+#<_depth> = 3
+
+o100 sub (square pocket centered at #1 #2, depth #3)
+G0 Z2
+G0 X[#1 - #<_size>] Y[#2 - #<_size>]
+G1 Z-#3 F300
+G1 X[#1 + #<_size>] F700
+G1 Y[#2 + #<_size>]
+G1 X[#1 - #<_size>]
+G1 Y[#2 - #<_size>]
+G1 X[#1 + #<_size>] Y[#2 + #<_size>] (clear the middle)
+G0 Z2
+o100 endsub
+
+M3 S9000 M8
+#1 = 0
+o200 while [#1 LT #<_cols>]
+  #2 = 0
+  o201 while [#2 LT #<_rows>]
+    o100 call [[#1 * #<_pitch>] - #<_pitch>] [[#2 * #<_pitch>] - #<_pitch> / 2] [#<_depth>]
+    #2 = [#2 + 1]
+  o201 endwhile
+  #1 = [#1 + 1]
+o200 endwhile
+
+(settle, then face one edge pass)
+G4 P1
+G0 Z2
+G0 X-50 Y-35
+G1 Z-1 F300
+G1 X85 F900
+G0 Z10
+M5 M9
+G0 X0 Y0
+M2
