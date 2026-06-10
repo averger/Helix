@@ -1,0 +1,46 @@
+(Helix demo - bracket contour with corner radii + slot)
+G21 G90 G17
+G0 Z5
+G0 X-70 Y-40
+M3 S9000
+F1500
+
+(outer contour 140x80, R10 corners, 2 depth passes)
+G1 Z-1.5
+G1 X50 Y-40
+G2 X70 Y-20 I0 J20
+G1 X70 Y20
+G2 X50 Y40 I-20 J0
+G1 X-50 Y40
+G2 X-70 Y20 I0 J-20
+G1 X-70 Y-20
+G2 X-50 Y-40 I0 J20
+G1 X-70 Y-40
+G1 Z-3
+G1 X50 Y-40
+G2 X70 Y-20 I0 J20
+G1 X70 Y20
+G2 X50 Y40 I-20 J0
+G1 X-50 Y40
+G2 X-70 Y20 I0 J-20
+G1 X-70 Y-20
+G2 X-50 Y-40 I0 J20
+G1 X-70 Y-40
+G0 Z5
+
+(center slot 60 long, R8 ends)
+G0 X-30 Y-8
+G1 Z-2 F700
+G1 X30 Y-8
+G3 X30 Y8 I0 J8
+G1 X-30 Y8
+G3 X-30 Y-8 I0 J-8
+G1 Z-4
+G1 X30 Y-8
+G3 X30 Y8 I0 J8
+G1 X-30 Y8
+G3 X-30 Y-8 I0 J-8
+G0 Z8
+M5
+G0 X0 Y0
+M2

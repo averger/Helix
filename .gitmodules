@@ -1,0 +1,4 @@
+[submodule "core/linuxcnc"]
+	path = core/linuxcnc
+	url = https://github.com/LinuxCNC/linuxcnc.git
+	shallow = true

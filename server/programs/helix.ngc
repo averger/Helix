@@ -1,0 +1,23 @@
+(Helix demo - the namesake: helical descent into a bore)
+G21 G90 G17
+G0 Z8
+G0 X30 Y0
+M3 S10000
+F900
+
+(8 turns, 3 mm per revolution)
+G1 Z0
+G2 X30 Y0 I-30 J0 Z-3
+G2 X30 Y0 I-30 J0 Z-6
+G2 X30 Y0 I-30 J0 Z-9
+G2 X30 Y0 I-30 J0 Z-12
+G2 X30 Y0 I-30 J0 Z-15
+G2 X30 Y0 I-30 J0 Z-18
+G2 X30 Y0 I-30 J0 Z-21
+G2 X30 Y0 I-30 J0 Z-24
+(finish floor pass)
+G2 X30 Y0 I-30 J0
+G0 Z8
+M5
+G0 X0 Y0
+M2
