@@ -6,8 +6,9 @@
   import Overrides from './lib/Overrides.svelte'
   import Transport from './lib/Transport.svelte'
   import Library from './lib/Library.svelte'
+  import Digitize from './lib/Digitize.svelte'
   import Toast from './lib/Toast.svelte'
-  import { libraryOpen } from './lib/store.js'
+  import { activePanel } from './lib/store.js'
 </script>
 
 <div class="shell">
@@ -15,8 +16,10 @@
   <main>
     <section class="stage">
       <Viewport />
-      {#if $libraryOpen}
+      {#if $activePanel === 'library'}
         <Library />
+      {:else if $activePanel === 'digitize'}
+        <Digitize />
       {/if}
       <Toast />
     </section>

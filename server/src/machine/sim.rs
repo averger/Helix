@@ -23,6 +23,31 @@ const HOME_MMPM: f64 = 3000.0;
 const DEFAULT_FEED_MMPM: f64 = 1000.0;
 const SIM_SPINDLE_RPM: f64 = 8000.0;
 
+/// The virtual part on the simulated table, for digitizing demos: a plate
+/// 20 mm below the datum carrying a gaussian dome and a flat-topped boss.
+/// Height is expressed in machine coordinates (datum = spindle zero on top
+/// of the part, so the surface is at z ≤ 0).
+pub fn virtual_part_height(x: f64, y: f64) -> f64 {
+    let base = -20.0;
+    // gaussian dome, apex ≈ -1 mm
+    let dome = {
+        let r2 = ((x + 15.0).powi(2) + (y + 10.0).powi(2)) / (18.0f64).powi(2);
+        19.0 * (-r2).exp()
+    };
+    // cylindrical boss with a softened shoulder, flat top at -6 mm
+    let boss = {
+        let r = ((x - 25.0).powi(2) + (y - 15.0).powi(2)).sqrt();
+        if r <= 12.0 {
+            14.0
+        } else if r <= 15.0 {
+            14.0 * (1.0 - (r - 12.0) / 3.0)
+        } else {
+            0.0
+        }
+    };
+    base + dome.max(boss)
+}
+
 fn axis_index(axis: char) -> Result<usize> {
     match axis {
         'x' => Ok(0),
@@ -398,6 +423,59 @@ impl Machine for SimMachine {
             s.state = State::Idle;
         }
         Ok(())
+    }
+
+    async fn probe_z(&self, x: f64, y: f64, z_safe: f64, z_min: f64, _feed: f64) -> Result<Option<f64>> {
+        let (x, y) = (
+            x.clamp(SOFT_MIN[0], SOFT_MAX[0]),
+            y.clamp(SOFT_MIN[1], SOFT_MAX[1]),
+        );
+        {
+            let mut s = self.lock();
+            if !s.homed {
+                return Err(reject("machine must be homed to probe"));
+            }
+            s.require(&[State::Idle, State::Probing], "probe")?;
+            s.state = State::Probing;
+        }
+
+        // The sim probes in time-lapse — a few visible hops per point so a
+        // grid scan stays watchable without taking real-machine minutes.
+        let pace = std::time::Duration::from_millis(15);
+        let check = |s: &Sim| -> Result {
+            if s.state == State::Probing {
+                Ok(())
+            } else {
+                Err(reject("probe interrupted"))
+            }
+        };
+
+        tokio::time::sleep(pace).await;
+        {
+            let mut s = self.lock();
+            check(&s)?;
+            s.pos[2] = z_safe.clamp(SOFT_MIN[2], SOFT_MAX[2]);
+        }
+        tokio::time::sleep(pace).await;
+        {
+            let mut s = self.lock();
+            check(&s)?;
+            s.pos[0] = x;
+            s.pos[1] = y;
+        }
+        tokio::time::sleep(pace).await;
+
+        let surface = virtual_part_height(x, y);
+        let contact = surface >= z_min && surface <= z_safe;
+        let z_stop = if contact { surface } else { z_min.max(SOFT_MIN[2]) };
+        let result = {
+            let mut s = self.lock();
+            check(&s)?;
+            s.pos[2] = z_stop;
+            s.state = State::Idle;
+            if contact { Some(surface) } else { None }
+        };
+        Ok(result)
     }
 
     async fn set_override(&self, kind: &str, value: f64) -> Result {

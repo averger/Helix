@@ -262,6 +262,37 @@ impl Machine for LinuxCncMachine {
         self.link.lock().await.set("abort").await
     }
 
+    async fn probe_z(&self, x: f64, y: f64, z_safe: f64, z_min: f64, feed: f64) -> Result<Option<f64>> {
+        // G38.3 probes toward the target without faulting when nothing is
+        // hit, so a miss is data rather than an error.
+        {
+            let mut link = self.link.lock().await;
+            link.set("mode mdi").await?;
+            link.set(&format!("mdi G90 G0 Z{z_safe:.4}")).await?;
+            link.set(&format!("mdi G0 X{x:.4} Y{y:.4}")).await?;
+            link.set(&format!("mdi G38.3 Z{z_min:.4} F{feed:.1}")).await?;
+        }
+        // wait for the interpreter to come back to idle
+        for _ in 0..2400 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let status = self.link.lock().await.get("program_status").await?;
+            if status.to_uppercase().contains("IDLE") {
+                let mut link = self.link.lock().await;
+                let tripped = link.get("probe_tripped").await.unwrap_or_default();
+                let pos = link.get("abs_act_pos").await?;
+                drop(link);
+                let z = pos
+                    .split_whitespace()
+                    .nth(3)
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .ok_or_else(|| reject("cannot read probed position"))?;
+                let hit = tripped.to_uppercase().contains("YES") || z > z_min + 1e-3;
+                return Ok(if hit { Some(z) } else { None });
+            }
+        }
+        Err(reject("probe move did not complete"))
+    }
+
     async fn set_override(&self, kind: &str, value: f64) -> Result {
         let percent = (value.clamp(0.0, 2.0) * 100.0).round() as i64;
         let cmd = match kind {

@@ -1,5 +1,5 @@
 <script>
-  import { telemetry, loadedInfo, libraryOpen, send } from './store.js'
+  import { telemetry, loadedInfo, activePanel, send } from './store.js'
 
   let state = $derived($telemetry?.state ?? 'estop')
   let prog = $derived($telemetry?.program)
@@ -8,8 +8,11 @@
 </script>
 
 <footer class="panel">
-  <button class="btn" onclick={() => libraryOpen.update((v) => !v)}>
+  <button class="btn" onclick={() => activePanel.update((v) => (v === 'library' ? null : 'library'))}>
     ☰ Programs
+  </button>
+  <button class="btn" onclick={() => activePanel.update((v) => (v === 'digitize' ? null : 'digitize'))}>
+    ⊹ Digitize
   </button>
 
   <div class="prog">

@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte'
-  import { programs, loadedInfo, libraryOpen, refreshPrograms, loadProgram, uploadProgram } from './store.js'
+  import { programs, loadedInfo, activePanel, refreshPrograms, loadProgram, uploadProgram } from './store.js'
 
   let fileInput = $state(null)
 
@@ -20,7 +20,7 @@
 <div class="drawer panel">
   <div class="head">
     <span class="label">Program Library</span>
-    <button class="close" onclick={() => libraryOpen.set(false)}>✕</button>
+    <button class="close" onclick={() => activePanel.set(null)}>✕</button>
   </div>
 
   <div class="list">

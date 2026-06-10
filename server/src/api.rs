@@ -14,6 +14,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::gcode;
 use crate::machine::Machine;
+use crate::scan::{self, ScanManager};
 
 const TELEMETRY_HZ: f64 = 30.0;
 
@@ -22,6 +23,7 @@ pub struct App {
     pub machine: Arc<dyn Machine>,
     pub programs_dir: PathBuf,
     pub loaded: Arc<Mutex<Option<gcode::Program>>>,
+    pub scans: Arc<ScanManager>,
 }
 
 pub fn router(app: App) -> Router {
@@ -30,6 +32,16 @@ pub fn router(app: App) -> Router {
         .route("/api/programs/:name", get(get_program))
         .route("/api/programs/:name/load", post(load_program))
         .route("/api/toolpath", get(toolpath))
+        .route("/api/scans", get(list_scans).post(create_scan))
+        .route("/api/scans/active", get(get_active_scan))
+        .route("/api/scans/active/point", post(capture_point))
+        .route("/api/scans/active/undo", post(undo_point))
+        .route("/api/scans/active/finish", post(finish_scan))
+        .route("/api/scans/active/discard", post(discard_scan))
+        .route("/api/scans/active/grid", post(start_grid_scan))
+        .route("/api/scans/active/cancel", post(cancel_grid_scan))
+        .route("/api/scans/:name", get(get_scan).delete(delete_scan))
+        .route("/api/scans/:name/export", post(export_scan))
         .route("/ws", get(ws_upgrade))
         .layer(CorsLayer::permissive())
         .with_state(app)
@@ -144,6 +156,247 @@ async fn toolpath(AxumState(app): AxumState<App>) -> Json<Value> {
     }
 }
 
+// ── digitizing ────────────────────────────────────────────────────────────
+
+async fn list_scans(AxumState(app): AxumState<App>) -> Json<Value> {
+    Json(Value::Array(app.scans.list()))
+}
+
+#[derive(serde::Deserialize)]
+struct CreateScan {
+    name: String,
+}
+
+async fn create_scan(
+    AxumState(app): AxumState<App>,
+    Json(req): Json<CreateScan>,
+) -> Result<Json<Value>, ApiError> {
+    let name = req.name.trim();
+    if name.is_empty() || name.contains(['/', '\\']) {
+        return Err(fail(StatusCode::BAD_REQUEST, "bad scan name"));
+    }
+    let mut active = app.scans.active.lock().unwrap();
+    if active.is_some() {
+        return Err(fail(StatusCode::CONFLICT, "a scan session is already open"));
+    }
+    *active = Some(scan::Scan {
+        name: name.to_string(),
+        mode: scan::ScanMode::Manual,
+        created: now(),
+        points: Vec::new(),
+        rows: Vec::new(),
+    });
+    Ok(Json(json!({"name": name})))
+}
+
+async fn get_active_scan(AxumState(app): AxumState<App>) -> Json<Value> {
+    let active = app.scans.active.lock().unwrap();
+    match active.as_ref() {
+        None => Json(json!(null)),
+        Some(s) => Json(serde_json::to_value(s).unwrap()),
+    }
+}
+
+async fn capture_point(AxumState(app): AxumState<App>) -> Result<Json<Value>, ApiError> {
+    let snapshot = app.machine.telemetry();
+    let pos = &snapshot["position"];
+    let point = [
+        pos["x"].as_f64().unwrap_or(0.0),
+        pos["y"].as_f64().unwrap_or(0.0),
+        pos["z"].as_f64().unwrap_or(0.0),
+    ];
+    let mut active = app.scans.active.lock().unwrap();
+    let scan = active.as_mut().ok_or_else(|| fail(StatusCode::CONFLICT, "no open scan session"))?;
+    // ignore a capture that didn't move
+    if scan.points.last().is_some_and(|l| {
+        (l[0] - point[0]).abs() < 1e-6 && (l[1] - point[1]).abs() < 1e-6 && (l[2] - point[2]).abs() < 1e-6
+    }) {
+        return Ok(Json(json!({"points": scan.points.len(), "added": false})));
+    }
+    scan.points.push(point);
+    Ok(Json(json!({"points": scan.points.len(), "added": true, "point": point})))
+}
+
+async fn undo_point(AxumState(app): AxumState<App>) -> Result<Json<Value>, ApiError> {
+    let mut active = app.scans.active.lock().unwrap();
+    let scan = active.as_mut().ok_or_else(|| fail(StatusCode::CONFLICT, "no open scan session"))?;
+    scan.points.pop();
+    Ok(Json(json!({"points": scan.points.len()})))
+}
+
+async fn finish_scan(AxumState(app): AxumState<App>) -> Result<Json<Value>, ApiError> {
+    if app.scans.job.active.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(fail(StatusCode::CONFLICT, "grid scan still running"));
+    }
+    let scan = app
+        .scans
+        .active
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or_else(|| fail(StatusCode::CONFLICT, "no open scan session"))?;
+    if scan.points.is_empty() {
+        return Err(fail(StatusCode::UNPROCESSABLE_ENTITY, "scan has no points"));
+    }
+    app.scans
+        .save(&scan)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({"name": scan.name, "points": scan.points.len()})))
+}
+
+async fn discard_scan(AxumState(app): AxumState<App>) -> Result<Json<Value>, ApiError> {
+    if app.scans.job.active.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(fail(StatusCode::CONFLICT, "grid scan still running"));
+    }
+    app.scans.active.lock().unwrap().take();
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn start_grid_scan(
+    AxumState(app): AxumState<App>,
+    Json(params): Json<scan::GridParams>,
+) -> Result<Json<Value>, ApiError> {
+    use std::sync::atomic::Ordering;
+    {
+        let mut active = app.scans.active.lock().unwrap();
+        let scan_session = active.as_mut().ok_or_else(|| fail(StatusCode::CONFLICT, "no open scan session"))?;
+        if app.scans.job.active.swap(true, Ordering::SeqCst) {
+            return Err(fail(StatusCode::CONFLICT, "a grid scan is already running"));
+        }
+        scan_session.mode = scan::ScanMode::Grid;
+    }
+    let (rows, ys) = scan::plan_grid(&params);
+    let job = Arc::clone(&app.scans.job);
+    job.cancel.store(false, Ordering::SeqCst);
+    job.done.store(0, Ordering::SeqCst);
+    job.total.store(rows.iter().map(Vec::len).sum(), Ordering::SeqCst);
+
+    let machine = Arc::clone(&app.machine);
+    let scans = Arc::clone(&app.scans);
+    tokio::spawn(async move {
+        let result = run_grid_job(&machine, &scans, &params, rows, ys).await;
+        scans.job.active.store(false, Ordering::SeqCst);
+        if result.is_ok() {
+            // persist a snapshot so the scan survives even before "finish"
+            let active = scans.active.lock().unwrap().clone();
+            if let Some(s) = active {
+                let _ = scans.save(&s);
+            }
+        }
+    });
+    Ok(Json(json!({"started": true})))
+}
+
+async fn run_grid_job(
+    machine: &Arc<dyn Machine>,
+    scans: &Arc<ScanManager>,
+    params: &scan::GridParams,
+    rows: Vec<Vec<f64>>,
+    ys: Vec<f64>,
+) -> crate::machine::Result {
+    use std::sync::atomic::Ordering;
+    let feed = 300.0;
+    for (xs, &y) in rows.iter().zip(&ys) {
+        let mut row: Vec<(f64, f64)> = Vec::with_capacity(xs.len());
+        for &x in xs {
+            if scans.job.cancel.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            let z = machine.probe_z(x, y, params.z_safe, params.z_min, feed).await?;
+            row.push((x, z.unwrap_or(params.z_min)));
+            scans.job.done.fetch_add(1, Ordering::Relaxed);
+        }
+        // adaptive refinement: keep probing midpoints until the row's
+        // resolution matches its relief
+        loop {
+            let mids = scan::refine_candidates(&row, params.refine_dz, params.step);
+            if mids.is_empty() {
+                break;
+            }
+            scans.job.total.fetch_add(mids.len(), Ordering::Relaxed);
+            let descending = xs.len() >= 2 && xs[1] < xs[0];
+            for x in mids {
+                if scans.job.cancel.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+                let z = machine.probe_z(x, y, params.z_safe, params.z_min, feed).await?;
+                row.push((x, z.unwrap_or(params.z_min)));
+                scans.job.done.fetch_add(1, Ordering::Relaxed);
+            }
+            row.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            if descending {
+                row.reverse();
+            }
+        }
+        let mut active = scans.active.lock().unwrap();
+        if let Some(s) = active.as_mut() {
+            for &(x, z) in &row {
+                s.points.push([x, y, z]);
+            }
+            s.rows.push(row.len());
+        }
+    }
+    Ok(())
+}
+
+async fn cancel_grid_scan(AxumState(app): AxumState<App>) -> Json<Value> {
+    app.scans.job.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    Json(json!({"ok": true}))
+}
+
+async fn get_scan(
+    AxumState(app): AxumState<App>,
+    UrlPath(name): UrlPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    let scan = scan_by_name(&app, &name)?;
+    Ok(Json(serde_json::to_value(scan).unwrap()))
+}
+
+async fn delete_scan(
+    AxumState(app): AxumState<App>,
+    UrlPath(name): UrlPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    if app.scans.delete(&name) {
+        Ok(Json(json!({"ok": true})))
+    } else {
+        Err(fail(StatusCode::NOT_FOUND, format!("no scan named {name:?}")))
+    }
+}
+
+async fn export_scan(
+    AxumState(app): AxumState<App>,
+    UrlPath(name): UrlPath<String>,
+    Json(params): Json<scan::ExportParams>,
+) -> Result<Json<Value>, ApiError> {
+    let scan = scan_by_name(&app, &name)?;
+    let gcode_text = scan::export_gcode(&scan, &params)
+        .map_err(|e| fail(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    let filename = format!("{}-{}.ngc", scan.name, params.mode);
+    std::fs::write(app.programs_dir.join(&filename), &gcode_text)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({"program": filename, "points": scan.points.len()})))
+}
+
+/// Stored scans win; fall back to the open session so the operator can
+/// export without finishing first.
+fn scan_by_name(app: &App, name: &str) -> Result<scan::Scan, ApiError> {
+    if let Some(s) = app.scans.get(name) {
+        return Ok(s);
+    }
+    let active = app.scans.active.lock().unwrap();
+    match active.as_ref() {
+        Some(s) if s.name == name => Ok(s.clone()),
+        _ => Err(fail(StatusCode::NOT_FOUND, format!("no scan named {name:?}"))),
+    }
+}
+
+fn now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+
 async fn ws_upgrade(AxumState(app): AxumState<App>, ws: WebSocketUpgrade) -> impl IntoResponse {
     ws.on_upgrade(move |socket| ws_session(app, socket))
 }
@@ -154,7 +407,10 @@ async fn ws_session(app: App, mut socket: WebSocket) {
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                let snapshot = app.machine.telemetry();
+                let mut snapshot = app.machine.telemetry();
+                if let Some(obj) = snapshot.as_object_mut() {
+                    obj.insert("scan".into(), app.scans.status());
+                }
                 if socket.send(Message::Text(snapshot.to_string())).await.is_err() {
                     return;
                 }

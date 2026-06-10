@@ -28,6 +28,10 @@ Helix asks one question: *what would this look like if it were designed today?*
   is always visible and always truthful. No ambiguous buttons.
 - **Simulation built in.** The full interface runs against a physics-faithful G-code
   simulator — train operators, verify programs, demo the UI, all without a machine.
+- **Digitize what's on the table.** Zero the spindle on a part, trace it point by
+  point or let the probe raster it on an adaptive grid (dense where the shape
+  changes, sparse where it doesn't), then export the captured cloud straight back
+  into the program library as G-code and reproduce the part.
 
 ## Architecture
 

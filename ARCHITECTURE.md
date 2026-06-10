@@ -107,6 +107,35 @@ and the segment list is used for visualization only.
 Adding a different controller later (e.g. a PlanetCNC bridge) means implementing
 one trait.
 
+## Digitizing (`server/src/scan.rs`)
+
+The operator zeroes the spindle on the part datum (0,0,0 on top of the part)
+and opens a scan session. Two capture modes, freely mixed:
+
+- **Manual trace** — jog to the surface and capture the current position,
+  point by point (`POST /api/scans/active/point`), or enable auto-capture in
+  the UI to record a point every *n* mm of travel while jogging along an edge.
+- **Adaptive grid** — define a region, base step and probe limits; the server
+  rasters it in serpentine rows through `Machine::probe_z()`. After each row it
+  probes midpoints wherever two neighbours differ by more than `refine_dz`,
+  repeating down to step/8 — resolution follows the shape, so flat areas stay
+  sparse and edges get dense.
+
+`probe_z()` is part of the machine contract: the simulator probes a built-in
+virtual part (a dome and a flat-topped boss on a plate — see
+`sim::virtual_part_height`), the LinuxCNC adapter issues `G38.3` probe moves
+over linuxcncrsh and reads back the contact position.
+
+Scans persist as JSON (`server/scans/`) and export back into the program
+library as G-code (`POST /api/scans/{name}/export`): **contour** replays a
+manual trace as one polyline; **raster** mills the captured rows serpentine,
+Z following the digitized surface. The exported `.ngc` is immediately loadable
+and runnable — digitize on the left of the shop, reproduce on the right.
+
+Grid-scan progress streams through the telemetry channel (a `scan` field is
+merged into every snapshot) and the UI renders the growing cloud live,
+depth-colored, in the WebGL viewport.
+
 ## Front-end
 
 - **Stack:** Svelte 5 + Vite, plain Svelte stores for telemetry (one store, fed

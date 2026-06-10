@@ -28,6 +28,7 @@ pub enum State {
     Mdi,
     Running,
     Paused,
+    Probing,
 }
 
 impl State {
@@ -42,6 +43,7 @@ impl State {
             State::Mdi => "mdi",
             State::Running => "running",
             State::Paused => "paused",
+            State::Probing => "probing",
         }
     }
 }
@@ -78,6 +80,12 @@ pub trait Machine: Send + Sync {
     async fn pause(&self) -> Result;
     async fn resume(&self) -> Result;
     async fn stop(&self) -> Result;
+
+    // -- probing -------------------------------------------------------------------
+    /// Move to (x, y) at z_safe, then probe down toward z_min at `feed`.
+    /// Returns Some(z) at the contact height, or None if the probe reached
+    /// z_min without touching anything. Requires an idle, homed machine.
+    async fn probe_z(&self, x: f64, y: f64, z_safe: f64, z_min: f64, feed: f64) -> Result<Option<f64>>;
 
     // -- overrides ---------------------------------------------------------------------
     /// kind: "feed" | "rapid" | "spindle"; value clamped to 0.0–2.0.

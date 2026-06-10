@@ -2,3 +2,4 @@ server/target/
 app/node_modules/
 app/dist/
 *.log
+scans/

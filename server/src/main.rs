@@ -1,6 +1,7 @@
 mod api;
 mod gcode;
 mod machine;
+mod scan;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -38,6 +39,10 @@ struct Args {
     /// Program library directory.
     #[arg(long)]
     programs: Option<PathBuf>,
+
+    /// Digitized-scan storage directory.
+    #[arg(long)]
+    scans: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -54,8 +59,15 @@ async fn main() -> anyhow_lite::Result {
 
     let programs_dir = args.programs.unwrap_or_else(default_programs_dir);
     std::fs::create_dir_all(&programs_dir).map_err(|e| e.to_string())?;
+    let scans_dir = args.scans.unwrap_or_else(default_scans_dir);
+    let scans = Arc::new(scan::ScanManager::new(scans_dir).map_err(|e| e.to_string())?);
 
-    let app = api::App { machine, programs_dir: programs_dir.clone(), loaded: Arc::new(Mutex::new(None)) };
+    let app = api::App {
+        machine,
+        programs_dir: programs_dir.clone(),
+        loaded: Arc::new(Mutex::new(None)),
+        scans,
+    };
     let addr = format!("{}:{}", args.host, args.port);
     tracing::info!("Helix server · listening on {addr} · programs={}", programs_dir.display());
 
@@ -71,6 +83,14 @@ fn default_programs_dir() -> PathBuf {
         return dev;
     }
     dirs_home().join(".helix").join("programs")
+}
+
+fn default_scans_dir() -> PathBuf {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if manifest.is_dir() {
+        return manifest.join("scans");
+    }
+    dirs_home().join(".helix").join("scans")
 }
 
 fn dirs_home() -> PathBuf {

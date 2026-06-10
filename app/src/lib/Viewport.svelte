@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import * as THREE from 'three'
   import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-  import { telemetry, toolpath } from './store.js'
+  import { telemetry, toolpath, scanCloud } from './store.js'
 
   let canvas = $state(null)
   let ready = $state(false)
@@ -12,6 +12,7 @@
   let tool = null
   let toolLight = null
   let segmentLines = [] // THREE.Line per segment, in program order
+  let cloudGroup = null // digitized point cloud + trace line
 
   const COLOR_RAPID = new THREE.Color('#39414d')
   const COLOR_FEED = new THREE.Color('#aeb7c4')
@@ -162,6 +163,57 @@
     const span = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2], 40)
     controls.target.set(cx, cy, (min[2] + max[2]) / 2)
     camera.position.set(cx + span * 1.1, cy - span * 1.4, span * 1.1)
+  })
+
+  // digitized point cloud: dots colored by depth, plus the trace order
+  // for manual scans
+  $effect(() => {
+    const cloud = $scanCloud
+    if (!ready) return
+    if (cloudGroup) {
+      scene.remove(cloudGroup)
+      cloudGroup.traverse((o) => {
+        o.geometry?.dispose()
+        o.material?.dispose()
+      })
+      cloudGroup = null
+    }
+    if (!cloud?.points?.length) return
+
+    const pts = cloud.points
+    let zMin = Infinity
+    let zMax = -Infinity
+    for (const p of pts) {
+      if (p[2] < zMin) zMin = p[2]
+      if (p[2] > zMax) zMax = p[2]
+    }
+    const span = Math.max(zMax - zMin, 1e-6)
+
+    const positions = new Float32Array(pts.length * 3)
+    const colors = new Float32Array(pts.length * 3)
+    const deep = new THREE.Color('#1b4965')
+    const high = new THREE.Color('#27e0ff')
+    const c = new THREE.Color()
+    for (let i = 0; i < pts.length; i++) {
+      positions.set(pts[i], i * 3)
+      c.lerpColors(deep, high, (pts[i][2] - zMin) / span)
+      colors.set([c.r, c.g, c.b], i * 3)
+    }
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+
+    cloudGroup = new THREE.Group()
+    cloudGroup.add(
+      new THREE.Points(geo, new THREE.PointsMaterial({ size: 2.2, vertexColors: true, sizeAttenuation: true }))
+    )
+    if (cloud.mode === 'manual' && pts.length > 1) {
+      const lineGeo = new THREE.BufferGeometry().setFromPoints(pts.map((p) => new THREE.Vector3(...p)))
+      cloudGroup.add(
+        new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0x27e0ff, transparent: true, opacity: 0.35 }))
+      )
+    }
+    scene.add(cloudGroup)
   })
 
   // live updates: tool position + completed-path coloring

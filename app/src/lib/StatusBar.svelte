@@ -11,6 +11,7 @@
     mdi: { label: 'MDI', tone: 'live' },
     running: { label: 'RUNNING', tone: 'live' },
     paused: { label: 'PAUSED', tone: 'warn' },
+    probing: { label: 'PROBING', tone: 'live' },
   }
 
   let state = $derived($telemetry?.state ?? 'estop')
