@@ -34,6 +34,9 @@ Helix asks one question: *what would this look like if it were designed today?*
   `#` variables and `[...]` expressions, O-code subroutines with arguments,
   `if`/`while`/`repeat`, G41/G42 cutter compensation, G4 dwell. What the
   viewer shows is what your loops actually produce.
+- **Four axes.** A rotary A axis rides along with XYZ — jog it, home it,
+  wrap-engrave with `G1 X.. A..` — plus lathe diameter mode (G7/G8). And a
+  keyboard pendant: arrows/PgUp/PgDn jog, space is feed-hold, esc stops.
 - **Simulation built in.** The full interface runs against a physics-faithful G-code
   simulator — train operators, verify programs, demo the UI, all without a machine.
 - **Digitize what's on the table.** Zero the spindle on a part, trace it point by
@@ -106,6 +109,27 @@ and the entire Helix interface drives the real iron. See
 | `server/`        | Helix server (Rust: axum + tokio, WS telemetry, G-code)      |
 | `core/linuxcnc`  | LinuxCNC fork — real-time motion core (git submodule)        |
 | `ARCHITECTURE.md`| Design document: principles, state machine, protocol         |
+
+## Status & roadmap
+
+Working today, in simulation and against a LinuxCNC core over linuxcncrsh:
+the full operator loop (e-stop → home → touch-off → run), 4-axis motion
+(XYZ + rotary A), WCS/G92/tool table, parametric G-code with O-codes and
+expressions, canned cycles, cutter compensation (preview grade), digitizing
+with adaptive grid scanning and G-code reproduction, single-block /
+run-from-line / M0-M1, manual spindle & coolant, keyboard pendant.
+
+Not there yet — honest gaps, in rough priority order:
+
+- **Full lathe mode** — G7/G8 diameter words parse, but turning cycles
+  (G70–G76), tool orientation and a diameter-first UI are missing.
+- **Cutter comp edge cases** — no gouge detection; concave arcs smaller
+  than the tool fold instead of erroring. The realtime core still does the
+  exact math on iron.
+- **HAL integration** — physical pendants (MPG), panel buttons, VFD and I/O
+  live in the LinuxCNC core's HAL layer; Helix doesn't surface them yet.
+- **B/C rotary axes** and non-trivial kinematics.
+- **Toolpath solids** — the viewer draws paths, not stock removal.
 
 ## License
 

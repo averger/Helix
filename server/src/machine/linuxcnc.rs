@@ -118,7 +118,7 @@ impl LinuxCncMachine {
         let coords: Vec<f64> = pos
             .split_whitespace()
             .skip(1)
-            .take(3)
+            .take(4)
             .filter_map(|v| v.parse().ok())
             .collect();
         let estop_on = estop.to_uppercase().contains("ON");
@@ -164,6 +164,7 @@ impl LinuxCncMachine {
                 "x": coords.first().copied().unwrap_or(0.0),
                 "y": coords.get(1).copied().unwrap_or(0.0),
                 "z": coords.get(2).copied().unwrap_or(0.0),
+                "a": coords.get(3).copied().unwrap_or(0.0),
             },
             "spindle": {"on": false, "rpm": 0, "load": 0.0},
             "feed": {"actual": 0.0, "programmed": 0.0, "override": 1.0},
@@ -179,6 +180,7 @@ impl LinuxCncMachine {
             'x' => Ok(0),
             'y' => Ok(1),
             'z' => Ok(2),
+            'a' => Ok(3),
             _ => Err(reject(format!("unknown axis {axis:?}"))),
         }
     }

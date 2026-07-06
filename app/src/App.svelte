@@ -11,9 +11,60 @@
   import Code from './lib/Code.svelte'
   import Spindle from './lib/Spindle.svelte'
   import Toast from './lib/Toast.svelte'
-  import { activePanel, refreshTools } from './lib/store.js'
+  import { activePanel, refreshTools, telemetry, send } from './lib/store.js'
+  import { onMount } from 'svelte'
 
   refreshTools()
+
+  // keyboard pendant: arrows X/Y · PgUp/PgDn Z · , . A · space hold · esc stop
+  const JOG_KEYS = {
+    ArrowLeft: ['x', -1],
+    ArrowRight: ['x', 1],
+    ArrowUp: ['y', 1],
+    ArrowDown: ['y', -1],
+    PageUp: ['z', 1],
+    PageDown: ['z', -1],
+    ',': ['a', -1],
+    '.': ['a', 1],
+  }
+  const held = new Set()
+
+  function typing(e) {
+    return ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName)
+  }
+
+  onMount(() => {
+    const down = (e) => {
+      if (typing(e)) return
+      const state = $telemetry?.state
+      if (e.key === ' ') {
+        e.preventDefault()
+        if (state === 'running') send({ cmd: 'pause' })
+        else if (state === 'paused') send({ cmd: 'resume' })
+        return
+      }
+      if (e.key === 'Escape') {
+        send({ cmd: 'stop' })
+        return
+      }
+      const jog = JOG_KEYS[e.key]
+      if (!jog || e.repeat) return
+      e.preventDefault()
+      held.add(e.key)
+      send({ cmd: 'jog', axis: jog[0], dir: jog[1], velocity: 3000 })
+    }
+    const up = (e) => {
+      const jog = JOG_KEYS[e.key]
+      if (!jog || !held.delete(e.key)) return
+      send({ cmd: 'jog', axis: jog[0], dir: 0 })
+    }
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+    }
+  })
 </script>
 
 <div class="shell">

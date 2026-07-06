@@ -113,6 +113,13 @@ named, subroutine-local vs. `_`-global scoping) with full `[...]`
 `repeat`/`endrepeat`. A 2-million-line execution budget catches endless
 loops at load time instead of on the machine.
 
+A rotary **A axis** rides along with XYZ: `A` words attach a (start°, end°)
+span to each segment and the simulator interpolates the angle across the
+segment's length; a pure rotation uses its angular travel as the segment
+length so it takes real time. The parse context carries the machine's
+current A so positioning moves are never dropped as motionless. `G7/G8`
+lathe diameter mode halves X words while active.
+
 Coordinates are resolved to machine space at parse time against a [`Context`]
 snapshot taken from the live machine (offsets, G92, tool lengths) — exactly
 what a controller's interpreter does, so the viewer shows the program where

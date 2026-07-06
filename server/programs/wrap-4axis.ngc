@@ -1,0 +1,22 @@
+(Helix demo - 4th axis wrap: helical engraving on a cylinder)
+(A rides along X: 4 full turns across 80 mm, then an indexed return groove)
+G21 G90 G17
+G0 Z5
+G0 X0 Y0 A0
+M3 S12000
+
+(helical wrap - A interpolates with X)
+G1 Z-0.5 F300
+G1 X80 A1440 F3000
+G0 Z5
+
+(index a quarter turn, groove straight back)
+G0 A1530
+G1 Z-0.5 F300
+G1 X0 F3000
+G0 Z5
+
+(park)
+M5
+G0 X0 Y0 A0
+M2

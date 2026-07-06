@@ -61,12 +61,23 @@ fn axis_index(axis: char) -> Result<usize> {
     }
 }
 
+/// Linear XYZ plus the rotary A (index 3) for jog/home commands.
+fn joint_index(axis: char) -> Result<usize> {
+    if axis == 'a' {
+        return Ok(3);
+    }
+    axis_index(axis)
+}
+
 struct Sim {
     state: State,
-    /// Machine coordinates.
+    /// Machine coordinates; index 3 is the rotary A axis in degrees.
     pos: [f64; 3],
-    homed_axes: [bool; 3],
-    homing_axes: [bool; 3],
+    a: f64,
+    homed_axes: [bool; 4],
+    homing_axes: [bool; 4],
+    /// (a at segment entry, a target) for the executing segment.
+    seg_a: Option<(f64, f64)>,
 
     // offsets & tooling
     wcs: [[f64; 3]; 9],
@@ -75,8 +86,8 @@ struct Sim {
     tool_no: u16,
     tool_length: f64,
 
-    jog_vel: [f64; 3],            // signed mm/min per axis
-    jog_steps: Vec<(usize, f64)>, // queued (axis, signed mm)
+    jog_vel: [f64; 4],            // signed mm/min (deg/min for A) per joint
+    jog_steps: Vec<(usize, f64)>, // queued (joint, signed mm or deg)
 
     feed_override: f64,
     rapid_override: f64,
@@ -112,14 +123,16 @@ impl Sim {
         Self {
             state: State::Estop,
             pos: [0.0; 3],
-            homed_axes: [false; 3],
-            homing_axes: [false; 3],
+            a: 0.0,
+            homed_axes: [false; 4],
+            homing_axes: [false; 4],
+            seg_a: None,
             wcs: [[0.0; 3]; 9],
             active_wcs: 0,
             g92: [0.0; 3],
             tool_no: 0,
             tool_length: 0.0,
-            jog_vel: [0.0; 3],
+            jog_vel: [0.0; 4],
             jog_steps: Vec::new(),
             feed_override: 1.0,
             rapid_override: 1.0,
@@ -169,7 +182,7 @@ impl Sim {
     }
 
     fn halt_motion(&mut self) {
-        self.jog_vel = [0.0; 3];
+        self.jog_vel = [0.0; 4];
         self.jog_steps.clear();
         self.stage(Vec::new(), Vec::new(), Vec::new());
         self.feed_actual = 0.0;
@@ -191,6 +204,7 @@ impl Sim {
         self.staged_dwells = dwells.into_iter().map(|(i, s)| (map(i), s)).collect();
         self.dwell_remaining = 0.0;
         self.run_segments = kept;
+        self.seg_a = None;
         self.seg_index = 0;
         self.seg_entered = usize::MAX;
         self.point_index = 0;
@@ -217,19 +231,24 @@ impl Sim {
         }
     }
 
+    fn joint(&mut self, i: usize) -> &mut f64 {
+        if i == 3 { &mut self.a } else { &mut self.pos[i] }
+    }
+
     fn tick_homing(&mut self, dt: f64) {
         let step = HOME_MMPM / 60.0 * dt;
         let mut done = true;
-        for i in 0..3 {
+        for i in 0..4 {
             if !self.homing_axes[i] {
                 continue;
             }
-            if self.pos[i].abs() <= step {
-                self.pos[i] = 0.0;
+            let p = self.joint(i);
+            if p.abs() <= step {
+                *p = 0.0;
                 self.homed_axes[i] = true;
                 self.homing_axes[i] = false;
             } else {
-                self.pos[i] -= step.copysign(self.pos[i]);
+                *p -= step.copysign(*p);
                 done = false;
             }
         }
@@ -240,18 +259,20 @@ impl Sim {
 
     fn tick_jog(&mut self, dt: f64) {
         let mut moving = false;
-        for i in 0..3 {
+        for i in 0..4 {
             let v = self.jog_vel[i];
             if v != 0.0 {
                 moving = true;
-                self.pos[i] = Self::clamp(i, self.pos[i] + v / 60.0 * dt);
+                let next = *self.joint(i) + v / 60.0 * dt;
+                *self.joint(i) = if i < 3 { Self::clamp(i, next) } else { next };
             }
         }
         // consume queued step jogs one tick-slice at a time
         if let Some(&(axis, remaining)) = self.jog_steps.first() {
             moving = true;
             let step = remaining.abs().min(HOME_MMPM / 60.0 * dt).copysign(remaining);
-            self.pos[axis] = Self::clamp(axis, self.pos[axis] + step);
+            let next = *self.joint(axis) + step;
+            *self.joint(axis) = if axis < 3 { Self::clamp(axis, next) } else { next };
             let left = remaining - step;
             if left.abs() < 1e-9 {
                 self.jog_steps.remove(0);
@@ -290,6 +311,7 @@ impl Sim {
         }
         self.seg_entered = self.seg_index;
         let seg = &self.run_segments[self.seg_index];
+        self.seg_a = seg.a.map(|(_, end)| (self.a, end));
         self.spindle_on = seg.rpm > 0.0;
         if self.spindle_on {
             self.spindle_cmd_rpm = seg.rpm;
@@ -358,7 +380,12 @@ impl Sim {
             }
             let a = seg.points[self.point_index];
             let b = seg.points[self.point_index + 1];
-            let edge = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+            let mut edge = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+            // pure rotation: the segment length is the angular travel
+            if edge < 1e-12 && seg.points.len() == 2 && seg.length > 1e-9 {
+                edge = seg.length;
+            }
+            let seg_length = seg.length.max(1e-12);
             let remain = edge - self.dist_into_edge;
             let advance = budget.min(remain);
             self.dist_into_edge += advance;
@@ -367,6 +394,9 @@ impl Sim {
             let t = if edge > 0.0 { self.dist_into_edge / edge } else { 1.0 };
             for i in 0..3 {
                 self.pos[i] = a[i] + (b[i] - a[i]) * t;
+            }
+            if let Some((a0, a1)) = self.seg_a {
+                self.a += advance / seg_length * (a1 - a0);
             }
             if self.dist_into_edge >= edge - 1e-12 {
                 self.point_index += 1;
@@ -454,15 +484,15 @@ impl Machine for SimMachine {
         let mut s = self.lock();
         s.require(&[State::On, State::Idle], "home")?;
         match axis {
-            None => s.homing_axes = [true; 3],
-            Some(a) => s.homing_axes[axis_index(a)?] = true,
+            None => s.homing_axes = [true; 4],
+            Some(a) => s.homing_axes[joint_index(a)?] = true,
         }
         s.state = State::Homing;
         Ok(())
     }
 
     async fn jog(&self, axis: char, direction: i8, velocity: f64) -> Result {
-        let i = axis_index(axis)?;
+        let i = joint_index(axis)?;
         let mut s = self.lock();
         if direction == 0 {
             s.jog_vel[i] = 0.0;
@@ -479,7 +509,7 @@ impl Machine for SimMachine {
     }
 
     async fn jog_step(&self, axis: char, direction: i8, step: f64) -> Result {
-        let i = axis_index(axis)?;
+        let i = joint_index(axis)?;
         let mut s = self.lock();
         s.require(&[State::Idle, State::Jog], "jog")?;
         s.jog_steps.push((i, step.abs() * f64::from(direction.signum())));
@@ -730,16 +760,18 @@ impl Machine for SimMachine {
             "t": now,
             "state": s.state.as_str(),
             "homed": s.homed(),
-            "homed_axes": {"x": s.homed_axes[0], "y": s.homed_axes[1], "z": s.homed_axes[2]},
+            "homed_axes": {"x": s.homed_axes[0], "y": s.homed_axes[1], "z": s.homed_axes[2], "a": s.homed_axes[3]},
             "position": {
                 "x": (work[0] * 1e4).round() / 1e4,
                 "y": (work[1] * 1e4).round() / 1e4,
                 "z": (work[2] * 1e4).round() / 1e4,
+                "a": (s.a * 1e4).round() / 1e4,
             },
             "machine_position": {
                 "x": (s.pos[0] * 1e4).round() / 1e4,
                 "y": (s.pos[1] * 1e4).round() / 1e4,
                 "z": (s.pos[2] * 1e4).round() / 1e4,
+                "a": (s.a * 1e4).round() / 1e4,
             },
             "wcs": {"index": s.active_wcs, "name": WCS_NAMES[s.active_wcs]},
             "tool": {"number": s.tool_no, "length": s.tool_length},
@@ -771,6 +803,7 @@ impl Machine for SimMachine {
             active_wcs: s.active_wcs,
             g92: s.g92,
             current_tool: s.tool_no,
+            a: s.a,
             ..Context::default()
         };
         if s.tool_no != 0 {

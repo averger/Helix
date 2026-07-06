@@ -9,6 +9,7 @@
 
   let canJog = $derived(['idle', 'jog'].includes($telemetry?.state))
   let canMdi = $derived($telemetry?.state === 'idle')
+  let hasRotary = $derived($telemetry?.position?.a !== undefined)
 
   function press(axis, dir) {
     if (continuous) {
@@ -57,6 +58,12 @@
       <button class="key" disabled={!canJog} onpointerdown={() => press('z', 1)} onpointerup={() => release('z')} onpointerleave={() => release('z')}>Z+</button>
       <button class="key" disabled={!canJog} onpointerdown={() => press('z', -1)} onpointerup={() => release('z')} onpointerleave={() => release('z')}>Z−</button>
     </div>
+    {#if hasRotary}
+      <div class="zcol">
+        <button class="key rot" disabled={!canJog} onpointerdown={() => press('a', 1)} onpointerup={() => release('a')} onpointerleave={() => release('a')}>A+</button>
+        <button class="key rot" disabled={!canJog} onpointerdown={() => press('a', -1)} onpointerup={() => release('a')} onpointerleave={() => release('a')}>A−</button>
+      </div>
+    {/if}
   </div>
 
   {#if continuous}
@@ -174,6 +181,11 @@
   .key:disabled {
     opacity: 0.3;
     cursor: not-allowed;
+  }
+
+  .key.rot {
+    color: var(--text-dim);
+    border-style: dashed;
   }
 
   .vel {

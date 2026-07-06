@@ -45,6 +45,9 @@ pub struct Context {
     /// Tool number → diameter (cutter compensation).
     pub tool_diameters: HashMap<u16, f64>,
     pub current_tool: u16,
+    /// Rotary A position at program start, degrees — so a positioning
+    /// move to a different angle isn't dropped as motionless.
+    pub a: f64,
     /// Skip lines starting with '/' when true.
     pub block_delete: bool,
 }
@@ -58,6 +61,7 @@ impl Default for Context {
             tool_lengths: HashMap::new(),
             tool_diameters: HashMap::new(),
             current_tool: 0,
+            a: 0.0,
             block_delete: false,
         }
     }
@@ -91,11 +95,21 @@ pub struct Segment {
     /// Active tool number.
     #[serde(skip)]
     pub tool: u16,
+    /// Rotary A-axis (start°, end°) when this segment carries A motion.
+    /// Interpolated linearly across the segment by the executor.
+    #[serde(skip)]
+    pub a: Option<(f64, f64)>,
 }
 
 impl Segment {
     fn finish(mut self) -> Self {
         self.length = self.points.windows(2).map(|w| dist(w[0], w[1])).sum();
+        // a pure rotation still takes time: degrees stand in for millimeters
+        if self.length < 1e-9 {
+            if let Some((a0, a1)) = self.a {
+                self.length = (a1 - a0).abs();
+            }
+        }
         self
     }
 }
@@ -566,9 +580,13 @@ struct Interp {
     ctx: Context,
     /// Machine-coordinate position (programmed path, before comp).
     pos: Point,
+    /// Rotary A position, degrees.
+    a_pos: f64,
     motion: u8,
     plane: u8,
     metric: bool,
+    /// G7 lathe diameter mode: X words are diameters, halved to radii.
+    diameter_mode: bool,
     absolute: bool,
     arc_absolute: bool,
     feed: f64,
@@ -591,6 +609,7 @@ struct Interp {
 
 struct LineWords {
     target_work: [Option<f64>; 3],
+    target_a: Option<f64>,
     offsets: [Option<f64>; 3], // i, j, k (scaled)
     radius: Option<f64>,
     q: Option<f64>,
@@ -602,12 +621,15 @@ struct LineWords {
 
 impl Interp {
     fn new(ctx: Context) -> Self {
+        let a_pos = ctx.a;
         Self {
             ctx,
             pos: [0.0; 3],
+            a_pos,
             motion: 0,
             plane: 17,
             metric: true,
+            diameter_mode: false,
             absolute: true,
             arc_absolute: false,
             feed: 0.0,
@@ -649,6 +671,7 @@ impl Interp {
             rpm: if self.spindle_on { self.rpm_word } else { 0.0 },
             coolant: self.coolant,
             tool: self.ctx.current_tool,
+            a: None,
         }
     }
 
@@ -671,6 +694,7 @@ impl Interp {
     ) -> Result<bool, GCodeError> {
         let mut w = LineWords {
             target_work: [None; 3],
+            target_a: None,
             offsets: [None; 3],
             radius: None,
             q: None,
@@ -700,6 +724,8 @@ impl Interp {
                             motion_on_line = true;
                         }
                         x if x == 4.0 => dwell = true,
+                        x if x == 7.0 => self.diameter_mode = true,
+                        x if x == 8.0 => self.diameter_mode = false,
                         x if x == 10.0 => g10 = true,
                         x if x == 17.0 || x == 18.0 || x == 19.0 => self.plane = g as u8,
                         x if x == 20.0 => self.metric = false,
@@ -753,8 +779,10 @@ impl Interp {
                 't' => self.pending_tool = value as u16,
                 'x' | 'y' | 'z' => {
                     let i = (letter as u8 - b'x') as usize;
-                    w.target_work[i] = Some(self.scale(value));
+                    let v = self.scale(value);
+                    w.target_work[i] = Some(if i == 0 && self.diameter_mode { v / 2.0 } else { v });
                 }
+                'a' => w.target_a = Some(value), // degrees, never inch-scaled
                 'i' | 'j' | 'k' => {
                     let i = (letter as u8 - b'i') as usize;
                     w.offsets[i] = Some(self.scale(value));
@@ -817,6 +845,11 @@ impl Interp {
                 target[i] = if self.absolute { v + self.offset(i) } else { self.pos[i] + v };
             }
         }
+        let a_target = w.target_a.map(|v| {
+            has_axis_word = true;
+            if self.absolute { v } else { self.a_pos + v }
+        });
+        let a_span = a_target.map(|end| (self.a_pos, end));
 
         if let Some(cycle) = self.cycle {
             if has_axis_word || motion_on_line {
@@ -833,17 +866,22 @@ impl Interp {
         match self.motion {
             0 | 1 => {
                 let kind = if self.motion == 0 { SegmentKind::Rapid } else { SegmentKind::Feed };
-                let seg = self.segment(kind, vec![self.pos, target], lineno);
+                let mut seg = self.segment(kind, vec![self.pos, target], lineno);
+                seg.a = a_span;
                 self.emit(seg, out);
                 self.pos = target;
             }
             2 | 3 => {
                 let points = self.arc(target, &w.offsets, w.radius, self.motion == 2, lineno)?;
-                let seg = self.segment(SegmentKind::Arc, points, lineno);
+                let mut seg = self.segment(SegmentKind::Arc, points, lineno);
+                seg.a = a_span;
                 self.emit(seg, out);
                 self.pos = target;
             }
             _ => {}
+        }
+        if let Some(end) = a_target {
+            self.a_pos = end;
         }
         Ok(false)
     }
@@ -1232,6 +1270,38 @@ G0 Y9";
     fn dwell_recorded() {
         let p = parse("t", "G0 X10\nG4 P2.5\nG0 X20").unwrap();
         assert_eq!(p.dwells, vec![(1, 2.5)]);
+    }
+
+    // ── rotary axis & lathe words ──────────────────────────────────────
+
+    #[test]
+    fn rotary_a_rides_along() {
+        let p = parse("t", "G0 X0 Y0 A0\nG1 X50 A180 F500").unwrap();
+        let seg = &p.segments[0];
+        assert_eq!(seg.a, Some((0.0, 180.0)));
+        assert!((seg.length - 50.0).abs() < 1e-9); // XYZ length; A interpolates over it
+    }
+
+    #[test]
+    fn pure_rotation_has_angular_length() {
+        let p = parse("t", "G0 A0\nG1 A90 F360").unwrap();
+        let seg = &p.segments[0];
+        assert_eq!(seg.a, Some((0.0, 90.0)));
+        assert!((seg.length - 90.0).abs() < 1e-9); // degrees stand in for mm
+        assert_eq!(seg.points[0], seg.points[1]);
+    }
+
+    #[test]
+    fn a_never_inch_scaled() {
+        let p = parse("t", "G20\nG1 A90 F100").unwrap();
+        assert_eq!(p.segments[0].a, Some((0.0, 90.0)));
+    }
+
+    #[test]
+    fn g7_diameter_mode_halves_x() {
+        let p = parse("t", "G7\nG0 X40\nG8\nG0 X40").unwrap();
+        assert_eq!(p.segments[0].points[1][0], 20.0); // diameter 40 → radius 20
+        assert_eq!(p.segments[1].points[1][0], 40.0);
     }
 
     // ── cutter compensation ────────────────────────────────────────────

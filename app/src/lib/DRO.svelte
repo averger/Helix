@@ -1,13 +1,14 @@
 <script>
   import { telemetry, send } from './store.js'
 
-  const AXES = ['x', 'y', 'z']
   const WCS = ['G54', 'G55', 'G56', 'G57', 'G58', 'G59', 'G59.1', 'G59.2', 'G59.3']
 
   let showMachine = $state(false)
 
   let pos = $derived($telemetry?.position ?? { x: 0, y: 0, z: 0 })
   let mpos = $derived($telemetry?.machine_position ?? { x: 0, y: 0, z: 0 })
+  // the rotary axis appears only when the controller reports one
+  let axes = $derived(pos.a !== undefined ? ['x', 'y', 'z', 'a'] : ['x', 'y', 'z'])
   let homedAxes = $derived($telemetry?.homed_axes ?? { x: false, y: false, z: false })
   let wcs = $derived($telemetry?.wcs ?? { index: 0, name: 'G54' })
   let tool = $derived($telemetry?.tool ?? { number: 0, length: 0 })
@@ -42,7 +43,7 @@
     </div>
   </div>
 
-  {#each AXES as axis}
+  {#each axes as axis}
     <div class="axis">
       <button
         class="name"
@@ -53,15 +54,21 @@
       >
         {axis.toUpperCase()}
       </button>
-      <span class="value">{fmt(showMachine ? mpos[axis] : pos[axis])}</span>
-      <button
-        class="zero"
-        title="Touch off — current position becomes {axis.toUpperCase()}0 in {wcs.name}"
-        disabled={!canSetup || showMachine}
-        onclick={() => send({ cmd: 'touch_off', axis, value: 0 })}
-      >
-        ⌀
-      </button>
+      <span class="value" class:rotary={axis === 'a'}>
+        {fmt(showMachine ? mpos[axis] : pos[axis])}
+      </span>
+      {#if axis === 'a'}
+        <span class="deg">°</span>
+      {:else}
+        <button
+          class="zero"
+          title="Touch off — current position becomes {axis.toUpperCase()}0 in {wcs.name}"
+          disabled={!canSetup || showMachine}
+          onclick={() => send({ cmd: 'touch_off', axis, value: 0 })}
+        >
+          ⌀
+        </button>
+      {/if}
     </div>
   {/each}
 
@@ -177,6 +184,18 @@
     font-weight: 500;
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.01em;
+  }
+
+  .value.rotary {
+    font-size: 22px;
+    color: var(--text-dim);
+  }
+
+  .deg {
+    width: 28px;
+    text-align: center;
+    color: var(--text-faint);
+    font-size: 13px;
   }
 
   .zero {

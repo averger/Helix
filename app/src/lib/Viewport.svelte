@@ -239,7 +239,9 @@
 
 <div class="viewport">
   <canvas bind:this={canvas}></canvas>
-  <div class="hint">drag · orbit&nbsp;&nbsp;|&nbsp;&nbsp;right-drag · pan&nbsp;&nbsp;|&nbsp;&nbsp;scroll · zoom</div>
+  <div class="hint">
+    drag · orbit&nbsp;&nbsp;|&nbsp;&nbsp;scroll · zoom&nbsp;&nbsp;|&nbsp;&nbsp;⌨ arrows/PgUp/PgDn · jog&nbsp;&nbsp;·&nbsp;&nbsp;space · hold&nbsp;&nbsp;·&nbsp;&nbsp;esc · stop
+  </div>
 </div>
 
 <style>
